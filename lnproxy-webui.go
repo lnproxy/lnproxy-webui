@@ -13,14 +13,12 @@ import (
 	"strings"
 
 	qrcode "github.com/skip2/go-qrcode"
-	"golang.org/x/crypto/acme/autocert"
 )
 
 var (
 	lnproxyClient = &http.Client{}
 	lnproxyHost   = flag.String("lnproxy-host", "127.0.0.1:4747", "REST host for lnproxy")
 	httpPort      = flag.Int("http-port", 4748, "http port over which to expose web ui")
-	httpsPort     = flag.Int("https-port", 4749, "http port over which to expose web ui")
 )
 
 func wrap(invoice string) (string, error) {
@@ -133,12 +131,6 @@ var LND *http.Client
 func main() {
 	flag.Parse()
 
-	certManager := autocert.Manager{
-		Prompt:     autocert.AcceptTOS,
-		HostPolicy: autocert.HostWhitelist("lnproxy.org", "www.lnproxy.org"),
-		Cache:      autocert.DirCache("certs"),
-	}
-
 	http.Handle("/assets/", http.StripPrefix("/assets/", addNostrHeaders(http.FileServer(http.Dir("assets")))))
 	http.Handle("/.well-known/", addNostrHeaders(http.StripPrefix("/.well-known/", http.FileServer(http.Dir("well-known")))))
 	http.HandleFunc("/", xHandler("start"))
@@ -149,11 +141,5 @@ func main() {
 	http.HandleFunc("/wrap/", wrapHandler)
 	http.HandleFunc("/api/", apiHandler)
 
-	server := &http.Server{
-		Addr:      fmt.Sprintf("localhost:%d", *httpsPort),
-		TLSConfig: certManager.TLSConfig(),
-	}
-
-	go http.ListenAndServe(fmt.Sprintf("localhost:%d", *httpPort), nil)
-	log.Panicln(server.ListenAndServeTLS("", ""))
+	log.Panicln(http.ListenAndServe(fmt.Sprintf(":%d", *httpPort), nil))
 }
