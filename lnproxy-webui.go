@@ -126,8 +126,6 @@ func addNostrHeaders(h http.Handler) http.HandlerFunc {
 	}
 }
 
-var LND *http.Client
-
 func main() {
 	flag.Parse()
 
