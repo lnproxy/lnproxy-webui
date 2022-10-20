@@ -17,16 +17,18 @@ import (
 
 var (
 	lnproxyClient = &http.Client{}
-	lnproxyHost   = flag.String("lnproxy-host", "127.0.0.1:4747", "REST host for lnproxy")
+	lnproxyHost   = flag.String("lnproxy-host", "http://127.0.0.1:4747/", "REST host for lnproxy")
 	httpPort      = flag.Int("http-port", 4748, "http port over which to expose web ui")
 )
 
-func wrap(invoice string) (string, error) {
-	req, err := http.NewRequest(
-		"GET",
-		fmt.Sprintf("http://%s/%s", *lnproxyHost, invoice),
-		nil,
-	)
+func wrap(invoice, routing_msat string) (string, error) {
+	var rurl string
+	if routing_msat == "" {
+		rurl = fmt.Sprintf("%s/%s", *lnproxyHost, invoice)
+	} else {
+		rurl = fmt.Sprintf("%s/%s?routing_msat=%s", *lnproxyHost, invoice, routing_msat)
+	}
+	req, err := http.NewRequest("GET", rurl, nil)
 	if err != nil {
 		return "", err
 	}
@@ -77,7 +79,7 @@ func wrapHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	i, err := wrap(m[2])
+	i, err := wrap(m[2], "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -102,7 +104,7 @@ func apiHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	i, err := wrap(m[2])
+	i, err := wrap(m[2], r.URL.Query().Get("routing_msat"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -126,15 +128,14 @@ func addNostrHeaders(h http.Handler) http.HandlerFunc {
 	}
 }
 
+var LND *http.Client
+
 func main() {
 	flag.Parse()
 
 	http.Handle("/assets/", http.StripPrefix("/assets/", addNostrHeaders(http.FileServer(http.Dir("assets")))))
 	http.Handle("/.well-known/", addNostrHeaders(http.StripPrefix("/.well-known/", http.FileServer(http.Dir("well-known")))))
 	http.HandleFunc("/", xHandler("start"))
-	http.HandleFunc("/about", xHandler("about"))
-	http.HandleFunc("/doc", xHandler("doc"))
-	http.HandleFunc("/contact", xHandler("contact"))
 	http.HandleFunc("/wrap", redirectHandler)
 	http.HandleFunc("/wrap/", wrapHandler)
 	http.HandleFunc("/api/", apiHandler)
