@@ -18,7 +18,7 @@ import (
 var (
 	lnproxyClient = &http.Client{}
 	lnproxyHost   = flag.String("lnproxy-host", "http://127.0.0.1:4747/", "REST host for lnproxy")
-	httpPort      = flag.Int("http-port", 4748, "http port over which to expose web ui")
+	httpPort      = flag.String("http-port", "4748", "http port over which to expose web ui")
 )
 
 func wrap(invoice, routing_msat string) (string, error) {
@@ -68,7 +68,12 @@ func redirectHandler(w http.ResponseWriter, r *http.Request) {
 	invoice = strings.TrimSpace(invoice)
 	invoice = strings.ToLower(invoice)
 	invoice = strings.TrimPrefix(invoice, "lightning:")
-	http.Redirect(w, r, r.URL.Path+"/"+invoice, http.StatusSeeOther)
+	if r.FormValue("advanced") == "on" {
+		q := r.URL.Query()
+		q.Set("routing_msat", r.FormValue("routing"))
+		r.URL.RawQuery = q.Encode()
+	}
+	http.Redirect(w, r, r.URL.JoinPath(invoice).String(), http.StatusSeeOther)
 }
 
 var validPath = regexp.MustCompile("^/(wrap|api)/(lnbc[a-z0-9]+)$")
@@ -79,7 +84,7 @@ func wrapHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	i, err := wrap(m[2], "")
+	i, err := wrap(m[2], r.URL.Query().Get("routing_msat"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -130,8 +135,6 @@ func addNostrHeaders(h http.Handler) http.HandlerFunc {
 	}
 }
 
-var LND *http.Client
-
 func main() {
 	flag.Parse()
 
@@ -142,5 +145,5 @@ func main() {
 	http.HandleFunc("/wrap/", wrapHandler)
 	http.HandleFunc("/api/", apiHandler)
 
-	log.Panicln(http.ListenAndServe(fmt.Sprintf(":%d", *httpPort), nil))
+	log.Panicln(http.ListenAndServe(":"+*httpPort, nil))
 }
