@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
@@ -9,6 +10,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
@@ -16,19 +19,22 @@ import (
 )
 
 var (
-	lnproxyClient = &http.Client{}
-	lnproxyHost   = flag.String("lnproxy-host", "http://127.0.0.1:4747/", "REST host for lnproxy")
-	httpPort      = flag.String("http-port", "4748", "http port over which to expose web ui")
+	lnproxyClient    = &http.Client{}
+	lnproxyURLString = flag.String("lnproxy-host", "http://127.0.0.1:4747/", "REST host for lnproxy")
+	lnproxyURL       *url.URL
+	httpPort         = flag.String("http-port", "4748", "http port over which to expose web ui")
 )
 
-func wrap(invoice, routing_msat string) (string, error) {
-	var rurl string
-	if routing_msat == "" {
-		rurl = fmt.Sprintf("%s/%s", *lnproxyHost, invoice)
-	} else {
-		rurl = fmt.Sprintf("%s/%s?routing_msat=%s", *lnproxyHost, invoice, routing_msat)
+var validPath = regexp.MustCompile("^/(?:wrap|api)/(?:(?:lightning:)?(?P<invoice>lnbc.*1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+)|(?:LIGHTNING:)?(?P<invoice>LNBC.*1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]+$))")
+
+func wrap(r *http.Request) (string, error) {
+	m := validPath.FindStringSubmatch(r.URL.Path)
+	if m == nil {
+		return "", fmt.Errorf("Invalid invoice")
 	}
-	req, err := http.NewRequest("GET", rurl, nil)
+	u := *lnproxyURL
+	u.RawQuery = r.URL.RawQuery
+	req, err := http.NewRequest("GET", u.JoinPath(strings.ToLower(m[1])).String(), nil)
 	if err != nil {
 		return "", err
 	}
@@ -76,15 +82,8 @@ func redirectHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, r.URL.JoinPath(invoice).String(), http.StatusSeeOther)
 }
 
-var validPath = regexp.MustCompile("^/(wrap|api)/(lnbc[a-z0-9]+)$")
-
 func wrapHandler(w http.ResponseWriter, r *http.Request) {
-	m := validPath.FindStringSubmatch(r.URL.Path)
-	if m == nil {
-		http.NotFound(w, r)
-		return
-	}
-	i, err := wrap(m[2], r.URL.Query().Get("routing_msat"))
+	i, err := wrap(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -106,17 +105,31 @@ func wrapHandler(w http.ResponseWriter, r *http.Request) {
 func apiHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept")
-	m := validPath.FindStringSubmatch(r.URL.Path)
-	if m == nil {
-		http.NotFound(w, r)
+
+	format := r.URL.Query().Get("format")
+	if format != "" && format != "json" {
+		http.Error(w, `{"status": "ERROR", "reason":"Invalid format"}`, http.StatusBadRequest)
 		return
 	}
-	i, err := wrap(m[2], r.URL.Query().Get("routing_msat"))
+
+	i, err := wrap(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		b, _ := json.Marshal(struct {
+			Status string `json:"status"`
+			Reason string `json:"reason"`
+		}{
+			Status: "ERROR",
+			Reason: err.Error(),
+		})
+		http.Error(w, string(b), http.StatusInternalServerError)
 		return
 	}
-	fmt.Fprintf(w, "%s\n", i)
+
+	if format == "json" {
+		fmt.Fprintf(w, "{\"wpr\":\"%s\"}", strings.TrimSpace(i))
+	} else {
+		fmt.Fprintf(w, "%s", i)
+	}
 }
 
 func xHandler(x string) http.HandlerFunc {
@@ -137,6 +150,13 @@ func addNostrHeaders(h http.Handler) http.HandlerFunc {
 
 func main() {
 	flag.Parse()
+
+	var err error
+	lnproxyURL, err = url.Parse(*lnproxyURLString)
+	if err != nil {
+		fmt.Fprintf(flag.CommandLine.Output(), "Unable to parse lnproxy host url: %v\n", err)
+		os.Exit(2)
+	}
 
 	http.Handle("/assets/", http.StripPrefix("/assets/", addNostrHeaders(http.FileServer(http.Dir("assets")))))
 	http.Handle("/.well-known/", addNostrHeaders(http.StripPrefix("/.well-known/", http.FileServer(http.Dir("well-known")))))
